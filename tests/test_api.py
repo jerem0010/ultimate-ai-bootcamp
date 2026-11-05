@@ -2,17 +2,17 @@
 import pytest
 from fastapi.testclient import TestClient
 
-import exercises.day_01.main as api
+from app.main import app
+from app import storage
 
 
 # ---------- FIXTURES ----------
 
 @pytest.fixture
 def client():
-    api.tasks.clear()
-    api.next_task_id = 1
+    storage.reset_storage()
 
-    with TestClient(api.app) as test_client:
+    with TestClient(app) as test_client:
         yield test_client
 
 
