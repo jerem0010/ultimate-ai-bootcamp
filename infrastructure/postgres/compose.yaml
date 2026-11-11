@@ -22,5 +22,34 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    # Image officielle Redis.
+    image: redis:7-alpine
+
+    # Nom stable du conteneur.
+    container_name: ultimate-ai-redis
+
+    # Redémarre Redis automatiquement.
+    restart: unless-stopped
+
+    # Expose Redis uniquement sur ton ordinateur.
+    ports:
+      - "127.0.0.1:6380:6379"
+
+    # Active une persistance simple via append-only file.
+    command: ["redis-server", "--appendonly", "yes"]
+
+    # Conserve les données Redis dans un volume Docker.
+    volumes:
+      - redis_data:/data
+
+    # Vérifie que Redis répond.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   postgres_data:
+  redis_data:

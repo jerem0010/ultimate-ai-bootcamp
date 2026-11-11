@@ -4,6 +4,12 @@ from app.schemas import TaskRequest, TaskResponse
 from app import storage
 from app.service import process_task
 
+# Request donne accès à l'application et à son client Redis.
+from fastapi import Request
+
+# Fonction qui ajoute une tâche à la queue.
+from app.queue import enqueue_task
+
 
 # Regroupe les routes HTTP de l'application.
 router = APIRouter()
@@ -47,28 +53,27 @@ async def get_models():
     status_code=201,
 )
 async def create_task(
-    request: TaskRequest,
-    background_tasks: BackgroundTasks,
+    task_request: TaskRequest,
+    request: Request,
 ):
     """
-    Crée une tâche en base et programme son traitement.
-
-    HTTP 201 : ressource créée.
+    Crée une tâche dans PostgreSQL puis place son ID
+    dans Redis pour qu'un worker la traite.
     """
 
-    # Enregistre la tâche avec le statut pending.
+    # 1. Enregistre la tâche avec le statut pending.
     task = await storage.save_task(
-        model=request.model,
-        prompt=request.prompt,
+        model=task_request.model,
+        prompt=task_request.prompt,
     )
 
-    # Programme le traitement après l'envoi de la réponse HTTP.
-    background_tasks.add_task(
-        process_task,
-        task["task_id"],
-    )
+    # 2. Récupère le client Redis partagé par FastAPI.
+    redis = request.app.state.redis
 
-    # Retourne immédiatement les informations de la tâche.
+    # 3. Ajoute l'identifiant dans la file de tâches.
+    await enqueue_task(redis, task["task_id"])
+
+    # 4. Retourne immédiatement la tâche au client HTTP.
     return task
 
 

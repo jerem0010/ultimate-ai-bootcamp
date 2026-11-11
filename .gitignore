@@ -8,3 +8,20 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Secrets et configuration locale
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# macOS et éditeurs
+.DS_Store
+.idea/
+
+# Fichiers temporaires
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
