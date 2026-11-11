@@ -42,50 +42,59 @@ async def reset_test_database():
 # FIXTURES
 # ============================================================
 
+
 @pytest.fixture
-def client():
+def client(monkeypatch):
     """
-    Prépare un environnement isolé pour chaque test.
+    Crée un client FastAPI isolé pour chaque test.
 
-    1. Vérifie les variables d'environnement.
-    2. Vide la base de test.
-    3. Démarre FastAPI sur cette base.
-    4. Restaure la configuration initiale.
+    - PostgreSQL : base de test
+    - Redis      : queue de test
+    - Nettoyage automatique de la queue
     """
 
-    # Base utilisée normalement par l'application.
     database_url = os.environ.get("DATABASE_URL")
-
-    # Base séparée réservée aux tests.
     test_database_url = os.environ.get("TEST_DATABASE_URL")
 
-    # Empêche l'exécution si la configuration est absente.
     if not database_url or not test_database_url:
         raise RuntimeError(
             "DATABASE_URL and TEST_DATABASE_URL must be configured"
         )
 
-    # Sécurité : les tests ne doivent jamais vider la base de développement.
     if database_url == test_database_url:
         raise RuntimeError(
             "Test database must be separate from development database"
         )
 
-    # Réinitialise la base de test avant chaque test.
+    # Configure les ressources de test avant de lancer FastAPI.
+    monkeypatch.setenv("DATABASE_URL", test_database_url)
+    monkeypatch.setenv(
+        "REDIS_QUEUE_NAME",
+        "ai:tasks:test:queue",
+    )
+
+    # Nettoie PostgreSQL avant chaque test.
     asyncio.run(reset_test_database())
 
-    # Redirige temporairement FastAPI vers la base de test.
-    os.environ["DATABASE_URL"] = test_database_url
+    # Nettoie uniquement la queue Redis de test.
+    async def clear_test_queue():
+        from app.queue import create_redis_client
 
-    try:
-        # TestClient lance le lifespan de FastAPI :
-        # ouverture du pool PostgreSQL au démarrage.
-        with TestClient(app) as test_client:
-            yield test_client
+        redis = create_redis_client()
 
-    finally:
-        # Restaure la base de développement après le test.
-        os.environ["DATABASE_URL"] = database_url
+        try:
+            await redis.delete("ai:tasks:test:queue")
+        finally:
+            await redis.aclose()
+
+    asyncio.run(clear_test_queue())
+
+    # Démarre FastAPI avec la configuration de test.
+    with TestClient(app) as test_client:
+        yield test_client
+
+    # monkeypatch restaure automatiquement les variables.
+
 
 
 # ============================================================
@@ -150,36 +159,35 @@ def test_create_and_get_task(client):
     assert response.json()["prompt"] == "Explain smart contract reentrancy"
 
 
-def test_background_task_completed(client):
+def test_task_starts_pending(client):
     """
-    Vérifie le traitement asynchrone d'une tâche.
+    Vérifie que FastAPI crée une tâche sans l'exécuter.
 
-    pending -> running -> completed
+    Le traitement appartient au worker Redis,
+    pas au serveur HTTP.
     """
 
-    # Prépare les données de la tâche.
     payload = {
         "prompt": "Explain Ethereum reentrancy",
         "model": "GPT",
-        "max_tokens": 500
+        "max_tokens": 500,
     }
 
-    # Crée la tâche et déclenche son traitement.
+    # Crée la tâche via FastAPI.
     response = client.post("/tasks", json=payload)
 
     assert response.status_code == 201
 
-    # Récupère l'identifiant de la tâche.
     task_id = response.json()["task_id"]
 
-    # TestClient attend la fin des BackgroundTasks.
-    # Le traitement simulé dure environ 2 secondes.
+    # La tâche doit initialement être en attente.
+    assert response.json()["status"] == "pending"
+
+    # Vérifie qu'elle existe bien dans PostgreSQL.
     response = client.get(f"/tasks/{task_id}")
 
     assert response.status_code == 200
-
-    # Vérifie que PostgreSQL contient le statut final.
-    assert response.json()["status"] == "completed"
+    assert response.json()["status"] == "pending"
 
 
 # ============================================================
