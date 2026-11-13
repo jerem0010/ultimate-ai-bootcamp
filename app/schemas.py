@@ -1,5 +1,5 @@
-
 from typing import Literal
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -30,3 +30,13 @@ class TaskResponse(BaseModel):
     ]
 
     result: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+TaskStatus = Literal["pending", "running", "completed", "failed"]
+
+
+class TaskPage(BaseModel):
+    items: list[TaskResponse]
+    next_cursor: int | None = None

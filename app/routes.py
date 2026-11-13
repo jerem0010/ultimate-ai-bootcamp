@@ -1,13 +1,13 @@
-
 from fastapi import (
     APIRouter,
     HTTPException,
     Request,
     Header,
     Response,
+    Query,
 )
 
-from app.schemas import TaskRequest, TaskResponse
+from app.schemas import TaskRequest, TaskResponse, TaskPage, TaskStatus
 from app import storage
 from app.queue import enqueue_task, get_queue_name
 from app.rate_limit import check_rate_limit
@@ -139,3 +139,12 @@ async def read_task(task_id: int):
         )
 
     return task
+
+
+@router.get("/tasks", response_model=TaskPage)
+async def read_tasks(
+    limit: int = Query(default=20, ge=1, le=100),
+    before_id: int | None = Query(default=None, ge=1),
+    status: TaskStatus | None = None,
+):
+    return await storage.list_tasks(limit, before_id, status)

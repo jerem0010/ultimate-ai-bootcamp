@@ -1,4 +1,3 @@
-
 import os
 import asyncpg
 
@@ -42,7 +41,7 @@ async def save_task(
             INSERT INTO tasks (model, prompt, max_tokens)
             VALUES ($1, $2, $3)
             RETURNING task_id, model, prompt,
-                      max_tokens, status, result
+                      max_tokens, status, result, created_at, updated_at
             """,
             model,
             prompt,
@@ -67,7 +66,7 @@ async def save_idempotent_task(
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (idempotency_key) DO NOTHING
             RETURNING task_id, model, prompt,
-                      max_tokens, status, result
+                      max_tokens, status, result, created_at, updated_at
             """,
             model,
             prompt,
@@ -83,7 +82,7 @@ async def save_idempotent_task(
         row = await conn.fetchrow(
             """
             SELECT task_id, model, prompt,
-                   max_tokens, status, result
+                   max_tokens, status, result, created_at, updated_at
             FROM tasks
             WHERE idempotency_key = $1
             """,
@@ -98,7 +97,7 @@ async def get_task(task_id: int):
         row = await conn.fetchrow(
             """
             SELECT task_id, model, prompt,
-                   max_tokens, status, result
+                   max_tokens, status, result, created_at, updated_at
             FROM tasks
             WHERE task_id = $1
             """,
@@ -113,7 +112,7 @@ async def update_status(task_id: int, status: str):
         await conn.execute(
             """
             UPDATE tasks
-            SET status = $1
+            SET status = $1, updated_at = now()
             WHERE task_id = $2
             """,
             status,
@@ -127,9 +126,33 @@ async def complete_task(task_id: int, result: str | None):
             """
             UPDATE tasks
             SET status = 'completed',
-                result = $1
+                result = $1, updated_at = now()
             WHERE task_id = $2
             """,
             result,
             task_id,
         )
+
+
+async def list_tasks(limit: int, before_id: int | None, status: str | None):
+    conditions = []
+    args = []
+    if status is not None:
+        args.append(status)
+        conditions.append(f"status = ${len(args)}")
+    if before_id is not None:
+        args.append(before_id)
+        conditions.append(f"task_id < ${len(args)}")
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    args.append(limit + 1)
+    async with get_pool().acquire() as conn:
+        rows = await conn.fetch(
+            f"""SELECT task_id, model, prompt, max_tokens, status, result,
+                       created_at, updated_at
+                FROM tasks {where}
+                ORDER BY task_id DESC LIMIT ${len(args)}""",
+            *args,
+        )
+    items = [dict(row) for row in rows[:limit]]
+    return {"items": items,
+            "next_cursor": items[-1]["task_id"] if len(rows) > limit else None}
