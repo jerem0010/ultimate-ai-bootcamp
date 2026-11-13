@@ -156,3 +156,60 @@ async def list_tasks(limit: int, before_id: int | None, status: str | None):
     items = [dict(row) for row in rows[:limit]]
     return {"items": items,
             "next_cursor": items[-1]["task_id"] if len(rows) > limit else None}
+
+async def claim_task(task_id: int):
+    """
+    Réserve atomiquement une tâche pending.
+
+    Si elle est déjà running, completed ou failed,
+    aucune ligne n'est modifiée.
+    """
+    async with get_pool().acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE tasks
+            SET status = 'running',
+                updated_at = now()
+            WHERE task_id = $1
+              AND status = 'pending'
+            RETURNING *
+            """,
+            task_id,
+        )
+
+        return dict(row) if row else None
+
+
+async def reset_abandoned_tasks():
+    """
+    Remet les tâches interrompues en pending.
+
+    Doit uniquement être appelé lorsqu'aucun
+    autre worker ne traite de tâches.
+    """
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE tasks
+            SET status = 'pending',
+                updated_at = now()
+            WHERE status = 'running'
+            """
+        )
+
+
+async def get_pending_task_ids():
+    """
+    PostgreSQL est notre source de vérité.
+    """
+    async with get_pool().acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT task_id
+            FROM tasks
+            WHERE status = 'pending'
+            ORDER BY task_id
+            """
+        )
+
+        return [row["task_id"] for row in rows]

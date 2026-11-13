@@ -32,10 +32,14 @@ async def process_task(
     redis: Redis | None = None,
 ):
     # 1. Récupérer la tâche.
-    task = await storage.get_task(task_id)
+    task = await storage.claim_task(task_id)
 
     if task is None:
-        raise ValueError(f"Task {task_id} not found")
+        logger.info(
+            "Task %s skipped: missing or already claimed",
+            task_id,
+        )
+        return
 
     # 2. Passer la tâche en running.
     await storage.update_status(task_id, "running")

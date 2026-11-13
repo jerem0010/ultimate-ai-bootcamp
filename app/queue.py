@@ -69,3 +69,56 @@ async def dequeue_task(
     _, task_id = item
 
     return int(task_id)
+
+def get_processing_queue_name() -> str:
+    return f"{get_queue_name()}:processing"
+
+
+async def reserve_task(redis: Redis) -> int | None:
+    """
+    Déplace atomiquement une tâche de la queue
+    principale vers la queue de traitement.
+    """
+    item = await redis.blmove(
+        get_queue_name(),
+        get_processing_queue_name(),
+        timeout=1,
+        src="RIGHT",
+        dest="LEFT",
+    )
+
+    return int(item) if item is not None else None
+
+
+async def acknowledge_task(
+    redis: Redis,
+    task_id: int,
+):
+    """
+    Supprime la tâche de la queue de traitement
+    après enregistrement de son état final.
+    """
+    await redis.lrem(
+        get_processing_queue_name(),
+        1,
+        str(task_id),
+    )
+
+
+async def recover_reserved_tasks(redis: Redis):
+    """
+    Replace les tâches abandonnées dans la queue
+    principale. À utiliser uniquement après avoir
+    obtenu le verrou exclusif du worker.
+    """
+    while True:
+        item = await redis.lmove(
+            get_processing_queue_name(),
+            get_queue_name(),
+            "RIGHT",
+            "LEFT",
+        )
+
+        if item is None:
+            break
+
