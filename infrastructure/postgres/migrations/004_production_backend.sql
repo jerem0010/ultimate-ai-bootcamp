@@ -1,0 +1,18 @@
+BEGIN;
+
+ALTER TABLE tasks
+ADD COLUMN IF NOT EXISTS max_tokens INTEGER NOT NULL DEFAULT 512;
+
+ALTER TABLE tasks
+ALTER COLUMN max_tokens SET DEFAULT 512;
+
+ALTER TABLE tasks
+ADD COLUMN IF NOT EXISTS result TEXT;
+
+ALTER TABLE tasks
+ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS tasks_idempotency_key_unique
+ON tasks (idempotency_key);
+
+COMMIT;

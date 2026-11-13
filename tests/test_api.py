@@ -90,8 +90,29 @@ def client(monkeypatch):
     asyncio.run(clear_test_queue())
 
     # Démarre FastAPI avec la configuration de test.
+    
     with TestClient(app) as test_client:
-        yield test_client
+
+        async def reset_rate_limits():
+            redis = test_client.app.state.redis
+
+            # Supprimer uniquement les compteurs
+            # du rate limiter de test.
+            async for key in redis.scan_iter(
+                match="ai:tasks:test:queue:rate:*"
+            ):
+                await redis.delete(key)
+
+        # Nettoyer avant chaque test.
+        test_client.portal.call(reset_rate_limits)
+
+        try:
+            yield test_client
+
+        finally:
+            # Nettoyer après chaque test.
+            test_client.portal.call(reset_rate_limits)
+
 
     # monkeypatch restaure automatiquement les variables.
 

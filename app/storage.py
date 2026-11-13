@@ -1,34 +1,22 @@
+
 import os
 import asyncpg
 
 
-# Variable contenant le pool partagé par l'application.
-# None signifie que la base n'est pas encore connectée.
 pool: asyncpg.Pool | None = None
 
 
 async def connect_db():
-    """
-    Initialise le pool de connexions au démarrage de FastAPI.
-    """
     global pool
 
-    # Lit l'URL PostgreSQL depuis une variable d'environnement.
-    # Cela évite d'écrire le mot de passe dans le code source.
-    database_url = os.environ["DATABASE_URL"]
-
-    # Crée le pool avec 1 à 5 connexions réutilisables.
     pool = await asyncpg.create_pool(
-        dsn=database_url,
+        dsn=os.environ["DATABASE_URL"],
         min_size=1,
         max_size=5,
     )
 
 
 async def disconnect_db():
-    """
-    Ferme le pool lorsque FastAPI s'arrête.
-    """
     global pool
 
     if pool is not None:
@@ -37,53 +25,80 @@ async def disconnect_db():
 
 
 def get_pool() -> asyncpg.Pool:
-    """
-    Retourne le pool actif ou signale qu'il n'est pas initialisé.
-    """
     if pool is None:
         raise RuntimeError("Database pool not initialized")
 
     return pool
 
 
-async def save_task(model: str, prompt: str):
-    """
-    Insère une nouvelle tâche dans PostgreSQL
-    et retourne la ligne créée.
-    """
-
-    # Emprunte une connexion pendant la requête SQL.
+async def save_task(
+    model: str,
+    prompt: str,
+    max_tokens: int = 512,
+):
     async with get_pool().acquire() as conn:
-
-        # INSERT crée une ligne.
-        # RETURNING récupère l'ID et les autres champs générés.
-        # $1 et $2 sont des paramètres SQL sécurisés.
         row = await conn.fetchrow(
             """
-            INSERT INTO tasks (model, prompt)
-            VALUES ($1, $2)
-            RETURNING task_id, model, prompt, status
+            INSERT INTO tasks (model, prompt, max_tokens)
+            VALUES ($1, $2, $3)
+            RETURNING task_id, model, prompt,
+                      max_tokens, status, result
             """,
             model,
             prompt,
+            max_tokens,
         )
 
-        # Convertit le Record PostgreSQL en dictionnaire Python.
         return dict(row)
 
 
-async def get_task(task_id: int):
-    """
-    Recherche une tâche par son identifiant.
-    Retourne None si elle n'existe pas.
-    """
-
+async def save_idempotent_task(
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    idempotency_key: str,
+):
     async with get_pool().acquire() as conn:
-
-        # WHERE limite la recherche à un identifiant précis.
         row = await conn.fetchrow(
             """
-            SELECT task_id, model, prompt, status
+            INSERT INTO tasks (
+                model, prompt, max_tokens, idempotency_key
+            )
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (idempotency_key) DO NOTHING
+            RETURNING task_id, model, prompt,
+                      max_tokens, status, result
+            """,
+            model,
+            prompt,
+            max_tokens,
+            idempotency_key,
+        )
+
+        # Nouvelle tâche créée.
+        if row is not None:
+            return dict(row), True
+
+        # La clé existe déjà : récupérer la tâche.
+        row = await conn.fetchrow(
+            """
+            SELECT task_id, model, prompt,
+                   max_tokens, status, result
+            FROM tasks
+            WHERE idempotency_key = $1
+            """,
+            idempotency_key,
+        )
+
+        return dict(row), False
+
+
+async def get_task(task_id: int):
+    async with get_pool().acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT task_id, model, prompt,
+                   max_tokens, status, result
             FROM tasks
             WHERE task_id = $1
             """,
@@ -94,13 +109,7 @@ async def get_task(task_id: int):
 
 
 async def update_status(task_id: int, status: str):
-    """
-    Modifie le statut d'une tâche existante.
-    """
-
     async with get_pool().acquire() as conn:
-
-        # Met à jour uniquement la tâche demandée.
         await conn.execute(
             """
             UPDATE tasks
@@ -108,5 +117,19 @@ async def update_status(task_id: int, status: str):
             WHERE task_id = $2
             """,
             status,
+            task_id,
+        )
+
+
+async def complete_task(task_id: int, result: str | None):
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE tasks
+            SET status = 'completed',
+                result = $1
+            WHERE task_id = $2
+            """,
+            result,
             task_id,
         )

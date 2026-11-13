@@ -1,47 +1,43 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+
+from fastapi import (
+    APIRouter,
+    HTTPException,
+    Request,
+    Header,
+    Response,
+)
 
 from app.schemas import TaskRequest, TaskResponse
 from app import storage
-from app.service import process_task
-
-# Request donne accès à l'application et à son client Redis.
-from fastapi import Request
-
-# Fonction qui ajoute une tâche à la queue.
-from app.queue import enqueue_task
+from app.queue import enqueue_task, get_queue_name
+from app.rate_limit import check_rate_limit
 
 
-# Regroupe les routes HTTP de l'application.
 router = APIRouter()
 
 
 @router.get("/")
 async def root():
-    """Endpoint d'accueil de l'API."""
     return {"message": "Welcome to my AI API"}
 
 
 @router.get("/health")
 async def health():
-    """Vérifie que le serveur HTTP répond."""
     return {"status": "ok"}
 
 
 @router.get("/hello/{name}")
 async def get_name(name: str):
-    """Retourne un message personnalisé."""
     return {"message": f"Hello, {name}!"}
 
 
 @router.get("/square/{number}")
 async def square(number: int):
-    """Calcule le carré d'un entier."""
     return {"square": number ** 2}
 
 
 @router.get("/models")
 async def get_models():
-    """Liste les modèles IA disponibles dans cette API."""
     return {
         "models": ["GPT", "Claude", "Gemini", "Llama", "Mistral"]
     }
@@ -55,25 +51,77 @@ async def get_models():
 async def create_task(
     task_request: TaskRequest,
     request: Request,
+    response: Response,
+    idempotency_key: str | None = Header(
+        default=None,
+        min_length=1,
+        max_length=128,
+    ),
 ):
-    """
-    Crée une tâche dans PostgreSQL puis place son ID
-    dans Redis pour qu'un worker la traite.
-    """
-
-    # 1. Enregistre la tâche avec le statut pending.
-    task = await storage.save_task(
-        model=task_request.model,
-        prompt=task_request.prompt,
-    )
-
-    # 2. Récupère le client Redis partagé par FastAPI.
     redis = request.app.state.redis
 
-    # 3. Ajoute l'identifiant dans la file de tâches.
+    # 1. Rate Limiting.
+    client_ip = (
+        request.client.host
+        if request.client
+        else "unknown"
+    )
+
+    rate_key = (
+        f"{get_queue_name()}:rate:{client_ip}"
+    )
+
+    allowed, ttl = await check_rate_limit(
+        redis,
+        rate_key,
+    )
+
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests",
+            headers={
+                "Retry-After": str(max(ttl, 1)),
+            },
+        )
+
+    # 2. Création idempotente si une clé est fournie.
+    if idempotency_key is not None:
+        task, created = await storage.save_idempotent_task(
+            model=task_request.model,
+            prompt=task_request.prompt,
+            max_tokens=task_request.max_tokens,
+            idempotency_key=idempotency_key,
+        )
+
+        if not created:
+            # Vérifier que la clé n'est pas réutilisée
+            # pour une requête différente.
+            if (
+                task["model"] != task_request.model
+                or task["prompt"] != task_request.prompt
+                or task["max_tokens"] != task_request.max_tokens
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency key already used with different parameters",
+                )
+
+            response.status_code = 200
+
+            return task
+
+    # 3. Création normale sans clé.
+    else:
+        task = await storage.save_task(
+            model=task_request.model,
+            prompt=task_request.prompt,
+            max_tokens=task_request.max_tokens,
+        )
+
+    # 4. Seules les nouvelles tâches sont mises en queue.
     await enqueue_task(redis, task["task_id"])
 
-    # 4. Retourne immédiatement la tâche au client HTTP.
     return task
 
 
@@ -82,13 +130,6 @@ async def create_task(
     response_model=TaskResponse,
 )
 async def read_task(task_id: int):
-    """
-    Récupère une tâche depuis PostgreSQL.
-
-    HTTP 404 : tâche inexistante.
-    """
-
-    # Recherche la tâche dans la base.
     task = await storage.get_task(task_id)
 
     if task is None:
