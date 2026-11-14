@@ -25,3 +25,8 @@ wheels/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Local secrets
+.env
+.env.*
+!.env.example

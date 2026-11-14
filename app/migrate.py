@@ -1,4 +1,4 @@
-"""Apply versioned SQL migrations to an existing Day 04 database."""
+"""Apply versioned SQL migrations to a PostgreSQL database."""
 import argparse
 import asyncio
 import hashlib
@@ -14,8 +14,6 @@ async def migrate(dsn: str):
     try:
         # Serialize migration runners on this database.
         await conn.execute("SELECT pg_advisory_lock(420005)")
-        if not await conn.fetchval("SELECT to_regclass('public.tasks') IS NOT NULL"):
-            raise RuntimeError("Missing tasks table: initialize the Day 02 schema first")
         await conn.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY, checksum TEXT NOT NULL,
             applied_at TIMESTAMPTZ NOT NULL DEFAULT now())""")

@@ -1,3 +1,5 @@
+from uuid import uuid4
+from app.cache import build_cache_key
 
 from unittest.mock import AsyncMock
 
@@ -61,8 +63,9 @@ def test_worker_recovers_abandoned_task(
         AsyncMock(return_value="Recovered response"),
     )
 
+    payload = {**PAYLOAD, "prompt": f"Explain reliable queues {uuid4()}"}
     task_id = client.post(
-        "/tasks", json=PAYLOAD
+        "/tasks", json=payload
     ).json()["task_id"]
 
     async def check():
@@ -94,6 +97,7 @@ def test_worker_recovers_abandoned_task(
 
         finally:
             await redis.delete(processing)
+            await redis.delete(build_cache_key(**payload))
 
     client.portal.call(check)
 
@@ -108,8 +112,9 @@ def test_duplicate_task_is_not_executed_twice(
         execute,
     )
 
+    payload = {**PAYLOAD, "prompt": f"Explain reliable queues {uuid4()}"}
     task_id = client.post(
-        "/tasks", json=PAYLOAD
+        "/tasks", json=payload
     ).json()["task_id"]
 
     async def check():
@@ -123,16 +128,19 @@ def test_duplicate_task_is_not_executed_twice(
             await enqueue_task(redis, task_id)
 
             await run_worker_once(redis)
+            # Remove cache so only the atomic claim prevents execution.
+            await redis.delete(build_cache_key(**payload))
             await run_worker_once(redis)
 
             task = await storage.get_task(task_id)
 
             assert task["status"] == "completed"
-            assert execute.await_count <= 1
+            assert execute.await_count == 1
             assert await redis.llen(processing) == 0
 
         finally:
             await redis.delete(processing)
+            await redis.delete(build_cache_key(**payload))
 
     client.portal.call(check)
 

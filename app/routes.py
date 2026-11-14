@@ -1,3 +1,6 @@
+import asyncio
+from fastapi.responses import JSONResponse
+
 from fastapi import (
     APIRouter,
     HTTPException,
@@ -148,3 +151,28 @@ async def read_tasks(
     status: TaskStatus | None = None,
 ):
     return await storage.list_tasks(limit, before_id, status)
+
+
+@router.get("/ready")
+async def readiness(request: Request):
+    """Check dependency availability with bounded, parallel probes."""
+    async def postgres():
+        async with storage.get_pool().acquire() as conn:
+            return await conn.fetchval("SELECT 1") == 1
+
+    async def redis():
+        return await request.app.state.redis.ping()
+
+    async def safe_check(check):
+        try:
+            return bool(await asyncio.wait_for(check(), timeout=2))
+        except Exception:
+            return False
+
+    pg_ok, redis_ok = await asyncio.gather(safe_check(postgres), safe_check(redis))
+    ready = pg_ok and redis_ok
+    return JSONResponse(status_code=200 if ready else 503, content={
+        "status": "ready" if ready else "not_ready",
+        "postgres": "ok" if pg_ok else "error",
+        "redis": "ok" if redis_ok else "error",
+    })
